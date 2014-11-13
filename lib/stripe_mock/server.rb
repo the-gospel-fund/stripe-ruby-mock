@@ -55,8 +55,8 @@ module StripeMock
       StripeMock.global_id_prefix
     end
 
-    def generate_card_token(card_params)
-      @instance.generate_card_token(card_params)
+    def generate_card_token(card_params, prefix = 'tok', global_prefix = StripMock.global_id_prefix)
+      @instance.generate_card_token(card_params, prefix, global_prefix)
     end
 
     def generate_bank_token(recipient_params)
