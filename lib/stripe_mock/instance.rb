@@ -2,6 +2,7 @@ module StripeMock
   class Instance
 
     include StripeMock::RequestHandlers::Helpers
+    include StripeMock::RequestHandlers::ParamValidators
 
     # Handlers are ordered by priority
     @@handlers = []
@@ -19,6 +20,7 @@ module StripeMock
 
     include StripeMock::RequestHandlers::Charges
     include StripeMock::RequestHandlers::Cards
+    include StripeMock::RequestHandlers::Sources
     include StripeMock::RequestHandlers::Subscriptions # must be before Customers
     include StripeMock::RequestHandlers::Customers
     include StripeMock::RequestHandlers::Coupons
@@ -27,13 +29,14 @@ module StripeMock
     include StripeMock::RequestHandlers::InvoiceItems
     include StripeMock::RequestHandlers::Plans
     include StripeMock::RequestHandlers::Recipients
+    include StripeMock::RequestHandlers::Transfers
     include StripeMock::RequestHandlers::Tokens
 
 
     attr_reader :bank_tokens, :charges, :coupons, :customers, :events,
-                :invoices, :plans, :recipients, :subscriptions
+                :invoices, :invoice_items, :plans, :recipients, :transfers, :subscriptions
 
-    attr_accessor :error_queue, :debug, :strict
+    attr_accessor :error_queue, :debug
 
     def initialize
       @bank_tokens = {}
@@ -43,18 +46,22 @@ module StripeMock
       @coupons = {}
       @events = {}
       @invoices = {}
+      @invoice_items = {}
       @plans = {}
       @recipients = {}
+      @transfers = {}
       @subscriptions = {}
 
       @debug = false
       @error_queue = ErrorQueue.new
       @id_counter = 0
       @balance_transaction_counter = 0
-      @strict = true
+
+      # This is basically a cache for ParamValidators
+      @base_strategy = TestStrategies::Base.new
     end
 
-    def mock_request(method, url, api_key, params={}, headers={})
+    def mock_request(method, url, api_key, params={}, headers={}, api_base_url=nil)
       return {} if method == :xtest
 
       # Ensure params hash has symbols as keys
@@ -64,6 +71,7 @@ module StripeMock
 
       if handler = Instance.handler_for_method_url(method_url)
         if @debug == true
+          puts "- - - - " * 8
           puts "[StripeMock req]::#{handler[:name]} #{method} #{url}"
           puts "                  #{params}"
         end
@@ -90,13 +98,12 @@ module StripeMock
 
     private
 
-    def assert_existance(type, id, obj, message=nil)
-      return unless @strict == true
-
+    def assert_existence(type, id, obj, message=nil)
       if obj.nil?
         msg = message || "No such #{type}: #{id}"
         raise Stripe::InvalidRequestError.new(msg, type.to_s, 404)
       end
+      obj
     end
 
     def new_id(prefix, global_prefix = StripeMock.global_id_prefix)

@@ -12,21 +12,20 @@ module StripeMock
 
       def new_customer(route, method_url, params, headers)
         params[:id] ||= new_id('cus')
-        cards = []
+        sources = []
 
-        if params[:card]
-          cards << get_card_by_token(params.delete(:card))
-          params[:default_card] = cards.first[:id]
+        if params[:source]
+          sources << get_card_by_token(params.delete(:source))
+          params[:default_source] = sources.first[:id]
         end
 
-        customers[ params[:id] ] = Data.mock_customer(cards, params)
+        customers[ params[:id] ] = Data.mock_customer(sources, params)
 
         if params[:plan]
           plan_id = params[:plan].to_s
-          plan = plans[plan_id]
-          assert_existance :plan, plan_id, plan
+          plan = assert_existence :plan, plan_id, plans[plan_id]
 
-          if params[:default_card].nil? && plan[:trial_period_days].nil? && plan[:amount] != 0
+          if params[:default_source].nil? && plan[:trial_period_days].nil? && plan[:amount] != 0
             raise Stripe::InvalidRequestError.new('You must supply a valid card', nil, 400)
           end
 
@@ -42,15 +41,13 @@ module StripeMock
 
       def update_customer(route, method_url, params, headers)
         route =~ method_url
-        assert_existance :customer, $1, customers[$1]
-
-        cus = customers[$1] ||= Data.mock_customer([], :id => $1)
+        cus = assert_existence :customer, $1, customers[$1]
         cus.merge!(params)
 
-        if params[:card]
-          new_card = get_card_by_token(params.delete(:card))
-          add_card_to_customer(new_card, cus)
-          cus[:default_card] = new_card[:id]
+        if params[:source]
+          new_card = get_card_by_token(params.delete(:source))
+          add_card_to_object(:customer, new_card, cus, true)
+          cus[:default_source] = new_card[:id]
         end
 
         cus
@@ -58,24 +55,21 @@ module StripeMock
 
       def delete_customer(route, method_url, params, headers)
         route =~ method_url
-        assert_existance :customer, $1, customers[$1]
+        assert_existence :customer, $1, customers[$1]
 
         customers[$1] = {
           id: customers[$1][:id],
           deleted: true
         }
-
-        customers[$1]
       end
 
       def get_customer(route, method_url, params, headers)
         route =~ method_url
-        assert_existance :customer, $1, customers[$1]
-        customers[$1] ||= Data.mock_customer([], :id => $1)
+        assert_existence :customer, $1, customers[$1]
       end
 
       def list_customers(route, method_url, params, headers)
-        customers.values
+        Data.mock_list_object(customers.values, params)
       end
 
     end

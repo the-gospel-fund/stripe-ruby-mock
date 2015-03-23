@@ -16,18 +16,16 @@ module StripeMock
 
       def get_coupon(route, method_url, params, headers)
         route =~ method_url
-        assert_existance :coupon, $1, coupons[$1]
-        coupons[$1] ||= Data.mock_coupon(:id => $1)
+        assert_existence :coupon, $1, coupons[$1]
       end
 
       def delete_coupon(route, method_url, params, headers)
         route =~ method_url
-        assert_existance :coupon, $1, coupons[$1]
-        coupons.delete($1)
+        assert_existence :coupon, $1, coupons.delete($1)
       end
 
       def list_coupons(route, method_url, params, headers)
-        coupons.values
+        Data.mock_list_object(coupons.values, params)
       end
 
     end

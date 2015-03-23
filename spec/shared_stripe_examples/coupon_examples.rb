@@ -88,23 +88,8 @@ shared_examples 'Coupon API' do
     Stripe::Coupon.create({ id: 'Coupon Two', amount_off: 3000 })
 
     all = Stripe::Coupon.all
-    expect(all.length).to eq(2)
-    all.map(&:id).should include('Coupon One', 'Coupon Two')
-    all.map(&:amount_off).should include(1500, 3000)
+    expect(all.count).to eq(2)
+    expect(all.map &:id).to include('Coupon One', 'Coupon Two')
+    expect(all.map &:amount_off).to include(1500, 3000)
   end
-
-
-  context "With strict mode toggled off" do
-
-    before { StripeMock.toggle_strict(false) }
-
-    it "can retrieve a stripe coupon with an id that doesn't exist" do
-      coupon = Stripe::Coupon.retrieve('test_coupon_x')
-
-      expect(coupon.id).to eq('test_coupon_x')
-      expect(coupon.percent_off).to_not be_nil
-      expect(coupon.valid).to be_true
-    end
-  end
-
 end
