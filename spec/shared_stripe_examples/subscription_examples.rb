@@ -2,20 +2,26 @@ require 'spec_helper'
 
 shared_examples 'Customer Subscriptions' do
 
+  def gen_card_tk
+    stripe_helper.generate_card_token
+  end
+
   context "creating a new subscription" do
-    it "adds a new subscription to customer with none" do
-      plan = Stripe::Plan.create(id: 'silver', name: 'Silver Plan', amount: 4999)
-      customer = Stripe::Customer.create(id: 'test_customer_sub', card: 'tk')
+    it "adds a new subscription to customer with none", :live => true do
+      plan = stripe_helper.create_plan(id: 'silver', name: 'Silver Plan', amount: 4999)
+      customer = Stripe::Customer.create(source: gen_card_tk)
 
       expect(customer.subscriptions.data).to be_empty
       expect(customer.subscriptions.count).to eq(0)
 
-      sub = customer.subscriptions.create({ :plan => 'silver' })
+      sub = customer.subscriptions.create({ :plan => 'silver', :metadata => { :foo => "bar", :example => "yes" } })
 
       expect(sub.object).to eq('subscription')
-      expect(sub.plan).to eq('silver')
+      expect(sub.plan.to_hash).to eq(plan.to_hash)
+      expect(sub.metadata.foo).to eq( "bar" )
+      expect(sub.metadata.example).to eq( "yes" )
 
-      customer = Stripe::Customer.retrieve('test_customer_sub')
+      customer = Stripe::Customer.retrieve(customer.id)
       expect(customer.subscriptions.data).to_not be_empty
       expect(customer.subscriptions.count).to eq(1)
       expect(customer.subscriptions.data.length).to eq(1)
@@ -23,10 +29,12 @@ shared_examples 'Customer Subscriptions' do
       expect(customer.subscriptions.data.first.id).to eq(sub.id)
       expect(customer.subscriptions.data.first.plan.to_hash).to eq(plan.to_hash)
       expect(customer.subscriptions.data.first.customer).to eq(customer.id)
+      expect(customer.subscriptions.data.first.metadata.foo).to eq( "bar" )
+      expect(customer.subscriptions.data.first.metadata.example).to eq( "yes" )
 
     end
 
-    it "correctly sets quantity and application_fee_percent" do
+    it "correctly sets quantity, application_fee_percent and tax_percent" do
       Stripe::Plan.create(
         :amount => 2500,
         :interval => 'month',
@@ -35,51 +43,52 @@ shared_examples 'Customer Subscriptions' do
         :id => 'silver',
         :statement_description => "testPlan"
       )
-      customer = Stripe::Customer.create(id: 'test_customer_sub', card: 'tk')
+      customer = Stripe::Customer.create(id: 'test_customer_sub', source: gen_card_tk)
 
       subscription = customer.subscriptions.create({
-        :plan => "silver", quantity: 2, application_fee_percent: 10})
+        :plan => "silver", quantity: 2, application_fee_percent: 10, tax_percent: 20})
       expect(subscription.quantity).to eq(2)
       expect(subscription.application_fee_percent).to eq(10)
+      expect(subscription.tax_percent).to eq(20)
     end
 
     it "adds additional subscription to customer with existing subscription" do
-      silver =  Stripe::Plan.create(id: 'silver')
-      gold =    Stripe::Plan.create(id: 'gold')
-      customer = Stripe::Customer.create(id: 'test_customer_sub', card: 'tk', plan: 'gold')
+      silver =  stripe_helper.create_plan(id: 'silver')
+      gold =    stripe_helper.create_plan(id: 'gold')
+      customer = Stripe::Customer.create(id: 'test_customer_sub', source: gen_card_tk, plan: 'gold')
 
       sub = customer.subscriptions.create({ :plan => 'silver' })
 
       expect(sub.object).to eq('subscription')
-      expect(sub.plan).to eq('silver')
+      expect(sub.plan.to_hash).to eq(silver.to_hash)
 
       customer = Stripe::Customer.retrieve('test_customer_sub')
       expect(customer.subscriptions.data).to_not be_empty
       expect(customer.subscriptions.count).to eq(2)
       expect(customer.subscriptions.data.length).to eq(2)
 
-      expect(customer.subscriptions.data.first.plan.to_hash).to eq(gold.to_hash)
-      expect(customer.subscriptions.data.first.customer).to eq(customer.id)
-
-      expect(customer.subscriptions.data.last.id).to eq(sub.id)
-      expect(customer.subscriptions.data.last.plan.to_hash).to eq(silver.to_hash)
+      expect(customer.subscriptions.data.last.plan.to_hash).to eq(gold.to_hash)
       expect(customer.subscriptions.data.last.customer).to eq(customer.id)
+
+      expect(customer.subscriptions.data.first.id).to eq(sub.id)
+      expect(customer.subscriptions.data.first.plan.to_hash).to eq(silver.to_hash)
+      expect(customer.subscriptions.data.first.customer).to eq(customer.id)
     end
 
     it "subscribes a cardless customer when specifing a card token" do
-      plan = Stripe::Plan.create(id: 'enterprise', amount: 499)
+      plan = stripe_helper.create_plan(id: 'enterprise', amount: 499)
       customer = Stripe::Customer.create(id: 'cardless')
 
-      sub = customer.subscriptions.create({ :plan => 'enterprise', :card => 'card_token' })
+      sub = customer.subscriptions.create(plan: 'enterprise', source: gen_card_tk)
       customer = Stripe::Customer.retrieve('cardless')
 
       expect(customer.subscriptions.data.first.id).to eq(sub.id)
       expect(customer.subscriptions.data.first.customer).to eq(customer.id)
 
-      expect(customer.cards.count).to eq(1)
-      expect(customer.cards.data.length).to eq(1)
-      expect(customer.default_card).to_not be_nil
-      expect(customer.default_card).to eq customer.cards.data.first.id
+      expect(customer.sources.count).to eq(1)
+      expect(customer.sources.data.length).to eq(1)
+      expect(customer.default_source).to_not be_nil
+      expect(customer.default_source).to eq customer.sources.data.first.id
     end
 
     it "throws an error when plan does not exist" do
@@ -96,7 +105,7 @@ shared_examples 'Customer Subscriptions' do
     end
 
     it "throws an error when subscribing a customer with no card" do
-      plan = Stripe::Plan.create(id: 'enterprise', amount: 499)
+      plan = stripe_helper.create_plan(id: 'enterprise', amount: 499)
       customer = Stripe::Customer.create(id: 'cardless')
 
       expect { customer.subscriptions.create({ :plan => 'enterprise' }) }.to raise_error {|e|
@@ -110,13 +119,13 @@ shared_examples 'Customer Subscriptions' do
     end
 
     it "subscribes a customer with no card to a plan with a free trial" do
-      plan = Stripe::Plan.create(id: 'trial', amount: 999, trial_period_days: 14)
+      plan = stripe_helper.create_plan(id: 'trial', amount: 999, trial_period_days: 14)
       customer = Stripe::Customer.create(id: 'cardless')
 
       sub = customer.subscriptions.create({ :plan => 'trial' })
 
       expect(sub.object).to eq('subscription')
-      expect(sub.plan).to eq('trial')
+      expect(sub.plan.to_hash).to eq(plan.to_hash)
       expect(sub.trial_end - sub.trial_start).to eq(14 * 86400)
 
       customer = Stripe::Customer.retrieve('cardless')
@@ -130,13 +139,13 @@ shared_examples 'Customer Subscriptions' do
     end
 
     it "subscribes a customer with no card to a free plan" do
-      plan = Stripe::Plan.create(id: 'free_tier', amount: 0)
+      plan = stripe_helper.create_plan(id: 'free_tier', amount: 0)
       customer = Stripe::Customer.create(id: 'cardless')
 
       sub = customer.subscriptions.create({ :plan => 'free_tier' })
 
       expect(sub.object).to eq('subscription')
-      expect(sub.plan).to eq('free_tier')
+      expect(sub.plan.to_hash).to eq(plan.to_hash)
 
       customer = Stripe::Customer.retrieve('cardless')
       expect(customer.subscriptions.data).to_not be_empty
@@ -149,33 +158,33 @@ shared_examples 'Customer Subscriptions' do
     end
 
     it "overrides trial length when trial end is set" do
-      plan = Stripe::Plan.create(id: 'trial', amount: 999, trial_period_days: 14)
+      plan = stripe_helper.create_plan(id: 'trial', amount: 999, trial_period_days: 14)
       customer = Stripe::Customer.create(id: 'short_trial')
       trial_end = Time.now.utc.to_i + 3600
 
       sub = customer.subscriptions.create({ plan: 'trial', trial_end: trial_end })
 
       expect(sub.object).to eq('subscription')
-      expect(sub.plan).to eq('trial')
+      expect(sub.plan.to_hash).to eq(plan.to_hash)
       expect(sub.current_period_end).to eq(trial_end)
       expect(sub.trial_end).to eq(trial_end)
     end
 
     it "returns without a trial when trial_end is set to 'now'" do
-      plan = Stripe::Plan.create(id: 'trial', amount: 999, trial_period_days: 14)
-      customer = Stripe::Customer.create(id: 'no_trial', card: 'tk')
+      plan = stripe_helper.create_plan(id: 'trial', amount: 999, trial_period_days: 14)
+      customer = Stripe::Customer.create(id: 'no_trial', source: gen_card_tk)
 
       sub = customer.subscriptions.create({ plan: 'trial', trial_end: "now" })
 
       expect(sub.object).to eq('subscription')
-      expect(sub.plan).to eq('trial')
+      expect(sub.plan.to_hash).to eq(plan.to_hash)
       expect(sub.status).to eq('active')
       expect(sub.trial_start).to be_nil
       expect(sub.trial_end).to be_nil
     end
 
     it "raises error when trial_end is not an integer or 'now'" do
-      plan = Stripe::Plan.create(id: 'trial', amount: 999, trial_period_days: 14)
+      plan = stripe_helper.create_plan(id: 'trial', amount: 999, trial_period_days: 14)
       customer = Stripe::Customer.create(id: 'cus_trial')
 
       expect { customer.subscriptions.create({ plan: 'trial', trial_end: "gazebo" }) }.to raise_error {|e|
@@ -186,7 +195,7 @@ shared_examples 'Customer Subscriptions' do
     end
 
     it "raises error when trial_end is set to a time in the past" do
-      plan = Stripe::Plan.create(id: 'trial', amount: 999, trial_period_days: 14)
+      plan = stripe_helper.create_plan(id: 'trial', amount: 999, trial_period_days: 14)
       customer = Stripe::Customer.create(id: 'past_trial')
       trial_end = Time.now.utc.to_i - 3600
 
@@ -198,7 +207,7 @@ shared_examples 'Customer Subscriptions' do
     end
 
     it "raises error when trial_end is set to a time more than five years in the future" do
-      plan = Stripe::Plan.create(id: 'trial', amount: 999, trial_period_days: 14)
+      plan = stripe_helper.create_plan(id: 'trial', amount: 999, trial_period_days: 14)
       customer = Stripe::Customer.create(id: 'long_trial')
       trial_end = Time.now.utc.to_i + 31557600*5 + 3600 # 5 years + 1 hour
 
@@ -213,16 +222,23 @@ shared_examples 'Customer Subscriptions' do
   context "updating a subscription" do
 
     it "updates a stripe customer's existing subscription" do
-      silver = Stripe::Plan.create(id: 'silver')
-      gold = Stripe::Plan.create(id: 'gold')
-      customer = Stripe::Customer.create(id: 'test_customer_sub', card: 'tk', plan: 'silver')
+      silver = stripe_helper.create_plan(id: 'silver')
+      gold = stripe_helper.create_plan(id: 'gold')
+      customer = Stripe::Customer.create(id: 'test_customer_sub', source: gen_card_tk, plan: 'silver')
 
       sub = customer.subscriptions.retrieve(customer.subscriptions.data.first.id)
       sub.plan = 'gold'
-      sub.save
+      sub.quantity = 5
+      sub.metadata.foo     = "bar"
+      sub.metadata.example = "yes"
+
+      expect(sub.save).to be_truthy
 
       expect(sub.object).to eq('subscription')
-      expect(sub.plan).to eq('gold')
+      expect(sub.plan.to_hash).to eq(gold.to_hash)
+      expect(sub.quantity).to eq(5)
+      expect(sub.metadata.foo).to eq( "bar" )
+      expect(sub.metadata.example).to eq( "yes" )
 
       customer = Stripe::Customer.retrieve('test_customer_sub')
       expect(customer.subscriptions.data).to_not be_empty
@@ -235,7 +251,7 @@ shared_examples 'Customer Subscriptions' do
     end
 
     it "throws an error when plan does not exist" do
-      free = Stripe::Plan.create(id: 'free', amount: 0)
+      free = stripe_helper.create_plan(id: 'free', amount: 0)
       customer = Stripe::Customer.create(id: 'cardless', plan: 'free')
 
       sub = customer.subscriptions.retrieve(customer.subscriptions.data.first.id)
@@ -254,7 +270,7 @@ shared_examples 'Customer Subscriptions' do
     end
 
     it "throws an error when subscription does not exist" do
-      free = Stripe::Plan.create(id: 'free', amount: 0)
+      free = stripe_helper.create_plan(id: 'free', amount: 0)
       customer = Stripe::Customer.create(id: 'cardless', plan: 'free')
 
       expect { customer.subscriptions.retrieve("gazebo") }.to raise_error {|e|
@@ -270,8 +286,8 @@ shared_examples 'Customer Subscriptions' do
     end
 
     it "throws an error when updating a customer with no card" do
-      free = Stripe::Plan.create(id: 'free', amount: 0)
-      paid = Stripe::Plan.create(id: 'enterprise', amount: 499)
+      free = stripe_helper.create_plan(id: 'free', amount: 0)
+      paid = stripe_helper.create_plan(id: 'enterprise', amount: 499)
       customer = Stripe::Customer.create(id: 'cardless', plan: 'free')
 
       sub = customer.subscriptions.retrieve(customer.subscriptions.data.first.id)
@@ -290,8 +306,8 @@ shared_examples 'Customer Subscriptions' do
     end
 
     it "updates a customer with no card to a plan with a free trial" do
-      free = Stripe::Plan.create(id: 'free', amount: 0)
-      trial = Stripe::Plan.create(id: 'trial', amount: 999, trial_period_days: 14)
+      free = stripe_helper.create_plan(id: 'free', amount: 0)
+      trial = stripe_helper.create_plan(id: 'trial', amount: 999, trial_period_days: 14)
       customer = Stripe::Customer.create(id: 'cardless', plan: 'free')
 
       sub = customer.subscriptions.retrieve(customer.subscriptions.data.first.id)
@@ -299,7 +315,7 @@ shared_examples 'Customer Subscriptions' do
       sub.save
 
       expect(sub.object).to eq('subscription')
-      expect(sub.plan).to eq('trial')
+      expect(sub.plan.to_hash).to eq(trial.to_hash)
 
       customer = Stripe::Customer.retrieve('cardless')
       expect(customer.subscriptions.data).to_not be_empty
@@ -312,8 +328,8 @@ shared_examples 'Customer Subscriptions' do
     end
 
     it "updates a customer with no card to a free plan" do
-      free = Stripe::Plan.create(id: 'free', amount: 0)
-      gratis = Stripe::Plan.create(id: 'gratis', amount: 0)
+      free = stripe_helper.create_plan(id: 'free', amount: 0)
+      gratis = stripe_helper.create_plan(id: 'gratis', amount: 0)
       customer = Stripe::Customer.create(id: 'cardless', plan: 'free')
 
       sub = customer.subscriptions.retrieve(customer.subscriptions.data.first.id)
@@ -321,7 +337,7 @@ shared_examples 'Customer Subscriptions' do
       sub.save
 
       expect(sub.object).to eq('subscription')
-      expect(sub.plan).to eq('gratis')
+      expect(sub.plan.to_hash).to eq(gratis.to_hash)
 
       customer = Stripe::Customer.retrieve('cardless')
       expect(customer.subscriptions.data).to_not be_empty
@@ -334,25 +350,25 @@ shared_examples 'Customer Subscriptions' do
     end
 
     it "sets a card when updating a customer's subscription" do
-      free = Stripe::Plan.create(id: 'free', amount: 0)
-      paid = Stripe::Plan.create(id: 'paid', amount: 499)
+      free = stripe_helper.create_plan(id: 'free', amount: 0)
+      paid = stripe_helper.create_plan(id: 'paid', amount: 499)
       customer = Stripe::Customer.create(id: 'test_customer_sub', plan: 'free')
 
       sub = customer.subscriptions.retrieve(customer.subscriptions.data.first.id)
       sub.plan = 'paid'
-      sub.card = 'tk'
+      sub.source = gen_card_tk
       sub.save
 
       customer = Stripe::Customer.retrieve('test_customer_sub')
 
-      expect(customer.cards.count).to eq(1)
-      expect(customer.cards.data.length).to eq(1)
-      expect(customer.default_card).to_not be_nil
-      expect(customer.default_card).to eq customer.cards.data.first.id
+      expect(customer.sources.count).to eq(1)
+      expect(customer.sources.data.length).to eq(1)
+      expect(customer.default_source).to_not be_nil
+      expect(customer.default_source).to eq customer.sources.data.first.id
     end
 
     it "overrides trial length when trial end is set" do
-      plan = Stripe::Plan.create(id: 'trial', amount: 999, trial_period_days: 14)
+      plan = stripe_helper.create_plan(id: 'trial', amount: 999, trial_period_days: 14)
       customer = Stripe::Customer.create(id: 'test_trial_end', plan: 'trial')
 
       sub = customer.subscriptions.retrieve(customer.subscriptions.data.first.id)
@@ -367,7 +383,7 @@ shared_examples 'Customer Subscriptions' do
     end
 
     it "returns without a trial when trial_end is set to 'now'" do
-      plan = Stripe::Plan.create(id: 'trial', amount: 999, trial_period_days: 14)
+      plan = stripe_helper.create_plan(id: 'trial', amount: 999, trial_period_days: 14)
       customer = Stripe::Customer.create(id: 'test_trial_end', plan: 'trial')
 
       sub = customer.subscriptions.retrieve(customer.subscriptions.data.first.id)
@@ -376,15 +392,15 @@ shared_examples 'Customer Subscriptions' do
       sub.save
 
       expect(sub.object).to eq('subscription')
-      expect(sub.plan).to eq('trial')
+      expect(sub.plan.to_hash).to eq(plan.to_hash)
       expect(sub.status).to eq('active')
       expect(sub.trial_start).to be_nil
       expect(sub.trial_end).to be_nil
     end
 
     it "changes an active subscription to a trial when trial_end is set" do
-      plan = Stripe::Plan.create(id: 'no_trial', amount: 999)
-      customer = Stripe::Customer.create(id: 'test_trial_end', plan: 'no_trial', card: 'tk')
+      plan = stripe_helper.create_plan(id: 'no_trial', amount: 999)
+      customer = Stripe::Customer.create(id: 'test_trial_end', plan: 'no_trial', source: gen_card_tk)
 
       sub = customer.subscriptions.retrieve(customer.subscriptions.data.first.id)
 
@@ -393,7 +409,7 @@ shared_examples 'Customer Subscriptions' do
       sub.save
 
       expect(sub.object).to eq('subscription')
-      expect(sub.plan).to eq('no_trial')
+      expect(sub.plan.to_hash).to eq(plan.to_hash)
       expect(sub.status).to eq('trialing')
       expect(sub.trial_end).to eq(trial_end)
       expect(sub.current_period_end).to eq(trial_end)
@@ -401,8 +417,8 @@ shared_examples 'Customer Subscriptions' do
 
 
     it "raises error when trial_end is not an integer or 'now'" do
-      plan = Stripe::Plan.create(id: 'no_trial', amount: 999)
-      customer = Stripe::Customer.create(id: 'test_trial_end', plan: 'no_trial', card: 'tk')
+      plan = stripe_helper.create_plan(id: 'no_trial', amount: 999)
+      customer = Stripe::Customer.create(id: 'test_trial_end', plan: 'no_trial', source: gen_card_tk)
 
       sub = customer.subscriptions.retrieve(customer.subscriptions.data.first.id)
       sub.trial_end = "gazebo"
@@ -417,37 +433,33 @@ shared_examples 'Customer Subscriptions' do
 
   context "cancelling a subscription" do
 
-    it "cancels a stripe customer's subscription" do
-      truth = Stripe::Plan.create(id: 'the truth')
-      customer = Stripe::Customer.create(id: 'test_customer_sub', card: 'tk', plan: "the truth")
+    it "cancels a stripe customer's subscription", :live => true do
+      truth = stripe_helper.create_plan(id: 'the truth')
+      customer = Stripe::Customer.create(source: gen_card_tk, plan: "the truth")
 
       sub = customer.subscriptions.retrieve(customer.subscriptions.data.first.id)
-      result = sub.delete()
+      result = sub.delete
 
       expect(result.status).to eq('canceled')
-      expect(result.cancel_at_period_end).to be_false
+      expect(result.cancel_at_period_end).to eq false
+      expect(result.canceled_at).to_not be_nil
       expect(result.id).to eq(sub.id)
 
-      customer = Stripe::Customer.retrieve('test_customer_sub')
-      expect(customer.subscriptions.data).to_not be_empty
-      expect(customer.subscriptions.count).to eq(1)
-      expect(customer.subscriptions.data.length).to eq(1)
-
-      expect(customer.subscriptions.data.first.status).to eq('canceled')
-      expect(customer.subscriptions.data.first.cancel_at_period_end).to be_false
-      expect(customer.subscriptions.data.first.ended_at).to_not be_nil
-      expect(customer.subscriptions.data.first.canceled_at).to_not be_nil
+      customer = Stripe::Customer.retrieve(customer.id)
+      expect(customer.subscriptions.data).to be_empty
+      expect(customer.subscriptions.count).to eq(0)
+      expect(customer.subscriptions.data.length).to eq(0)
     end
 
     it "cancels a stripe customer's subscription at period end" do
-      truth = Stripe::Plan.create(id: 'the_truth')
-      customer = Stripe::Customer.create(id: 'test_customer_sub', card: 'tk', plan: "the_truth")
+      truth = stripe_helper.create_plan(id: 'the_truth')
+      customer = Stripe::Customer.create(id: 'test_customer_sub', source: gen_card_tk, plan: "the_truth")
 
       sub = customer.subscriptions.retrieve(customer.subscriptions.data.first.id)
       result = sub.delete(at_period_end: true)
 
       expect(result.status).to eq('active')
-      expect(result.cancel_at_period_end).to be_true
+      expect(result.cancel_at_period_end).to eq(true)
       expect(result.id).to eq(sub.id)
 
       customer = Stripe::Customer.retrieve('test_customer_sub')
@@ -456,14 +468,14 @@ shared_examples 'Customer Subscriptions' do
       expect(customer.subscriptions.data.length).to eq(1)
 
       expect(customer.subscriptions.data.first.status).to eq('active')
-      expect(customer.subscriptions.data.first.cancel_at_period_end).to be_true
+      expect(customer.subscriptions.data.first.cancel_at_period_end).to eq(true)
       expect(customer.subscriptions.data.first.ended_at).to be_nil
       expect(customer.subscriptions.data.first.canceled_at).to_not be_nil
     end
 
     it "resumes an at period end cancelled subscription" do
-      truth = Stripe::Plan.create(id: 'the_truth')
-      customer = Stripe::Customer.create(id: 'test_customer_sub', card: 'tk', plan: "the_truth")
+      truth = stripe_helper.create_plan(id: 'the_truth')
+      customer = Stripe::Customer.create(id: 'test_customer_sub', source: gen_card_tk, plan: "the_truth")
 
       sub = customer.subscriptions.retrieve(customer.subscriptions.data.first.id)
       result = sub.delete(at_period_end: true)
@@ -477,15 +489,15 @@ shared_examples 'Customer Subscriptions' do
       expect(customer.subscriptions.data.length).to eq(1)
 
       expect(customer.subscriptions.data.first.status).to eq('active')
-      expect(customer.subscriptions.data.first.cancel_at_period_end).to be_false
+      expect(customer.subscriptions.data.first.cancel_at_period_end).to eq(false)
       expect(customer.subscriptions.data.first.ended_at).to be_nil
       expect(customer.subscriptions.data.first.canceled_at).to be_nil
     end
   end
 
   it "doesn't change status of subscription when cancelling at period end" do
-    trial = Stripe::Plan.create(id: 'trial', trial_period_days: 14)
-    customer = Stripe::Customer.create(id: 'test_customer_sub', card: 'tk', plan: "trial")
+    trial = stripe_helper.create_plan(id: 'trial', trial_period_days: 14)
+    customer = Stripe::Customer.create(id: 'test_customer_sub', source: gen_card_tk, plan: "trial")
 
     sub = customer.subscriptions.retrieve(customer.subscriptions.data.first.id)
     result = sub.delete(at_period_end: true)
@@ -497,12 +509,27 @@ shared_examples 'Customer Subscriptions' do
     expect(customer.subscriptions.data.first.status).to eq('trialing')
   end
 
+  it "doesn't require a card when trial_end is present", :live => true do
+    plan = stripe_helper.create_plan(
+      :amount => 2000,
+      :interval => 'month',
+      :name => 'Amazing Gold Plan',
+      :currency => 'usd',
+      :id => 'gold'
+    )
+
+    options = {plan: plan.id, trial_end: (Date.today + 30).to_time.to_i}
+
+    stripe_customer = Stripe::Customer.create
+    stripe_customer.subscriptions.create options
+  end
+
   context "retrieve multiple subscriptions" do
 
     it "retrieves a list of multiple subscriptions" do
-      free = Stripe::Plan.create(id: 'free', amount: 0)
-      paid = Stripe::Plan.create(id: 'paid', amount: 499)
-      customer = Stripe::Customer.create(id: 'test_customer_sub', card: 'tk', plan: "free")
+      free = stripe_helper.create_plan(id: 'free', amount: 0)
+      paid = stripe_helper.create_plan(id: 'paid', amount: 499)
+      customer = Stripe::Customer.create(id: 'test_customer_sub', source: gen_card_tk, plan: "free")
       customer.subscriptions.create({ :plan => 'paid' })
 
       customer = Stripe::Customer.retrieve('test_customer_sub')
@@ -513,11 +540,11 @@ shared_examples 'Customer Subscriptions' do
       expect(list.count).to eq(2)
       expect(list.data.length).to eq(2)
 
-      expect(list.data.first.object).to eq("subscription")
-      expect(list.data.first.plan.to_hash).to eq(free.to_hash)
-
       expect(list.data.last.object).to eq("subscription")
-      expect(list.data.last.plan.to_hash).to eq(paid.to_hash)
+      expect(list.data.last.plan.to_hash).to eq(free.to_hash)
+
+      expect(list.data.first.object).to eq("subscription")
+      expect(list.data.first.plan.to_hash).to eq(paid.to_hash)
     end
 
     it "retrieves an empty list if there's no subscriptions" do
@@ -529,6 +556,35 @@ shared_examples 'Customer Subscriptions' do
       expect(list.object).to eq("list")
       expect(list.count).to eq(0)
       expect(list.data.length).to eq(0)
+    end
+  end
+
+  describe "metadata" do
+
+    it "creates a stripe customer and subscribes them to a plan with meta data", :live => true do
+
+      stripe_helper.create_plan(
+        :amount => 500,
+        :interval => 'month',
+        :name => 'Sample Plan',
+        :currency => 'usd',
+        :id => 'Sample5'
+      )
+
+      customer = Stripe::Customer.create({
+        email: 'johnny@appleseed.com',
+        source: gen_card_tk
+      })
+
+      subscription = customer.subscriptions.create(:plan => "Sample5")
+      subscription.metadata['foo'] = 'bar'
+
+      expect(subscription.save).to be_a Stripe::Subscription
+
+      customer = Stripe::Customer.retrieve(customer.id)
+      expect(customer.email).to eq('johnny@appleseed.com')
+      expect(customer.subscriptions.first.plan.id).to eq('Sample5')
+      expect(customer.subscriptions.first.metadata['foo']).to eq('bar')
     end
   end
 
