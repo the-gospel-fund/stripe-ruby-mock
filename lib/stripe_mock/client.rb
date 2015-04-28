@@ -52,8 +52,8 @@ module StripeMock
       timeout_wrap { @pipe.generate_bank_token(recipient_params) }
     end
 
-    def generate_card_token(card_params)
-      timeout_wrap { @pipe.generate_card_token(card_params) }
+    def generate_card_token(card_params, prefix = 'tok', global_prefix = StripeMock.global_id_prefix)
+      timeout_wrap { @pipe.generate_card_token(card_params, prefix, global_prefix) }
     end
 
     def generate_webhook_event(event_data)

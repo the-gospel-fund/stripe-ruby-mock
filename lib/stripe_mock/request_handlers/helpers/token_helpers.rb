@@ -8,8 +8,8 @@ module StripeMock
         token
       end
 
-      def generate_card_token(card_params)
-        token = new_id 'tok'
+      def generate_card_token(card_params, prefix = 'tok', global_prefix = StripeMock.global_id_prefix)
+        token = new_id prefix, global_prefix
         card_params[:id] = new_id 'cc'
         @card_tokens[token] = Data.mock_card symbolize_names(card_params)
         token
